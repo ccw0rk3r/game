@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Pixel Racer</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+    body { overflow: hidden; background: #000; font-family: 'Press Start 2P', cursive; touch-action: none; image-rendering: pixelated; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+
+    #ui { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; color: #fff; font-size: clamp(12px, 3vw, 16px); text-shadow: 2px 2px 0 #000; pointer-events: none; z-index: 10; }
+    #dollars, #km { background: rgba(0,0,0,0.7); padding: 10px 16px; border: 3px solid #fff; border-radius: 4px; text-align: center; min-width: 20%; }
+
+    #buttons { position: absolute; bottom: 20px; left: 10px; right: 10px; display: flex; gap: 20px; z-index: 20; }
+    .btn { flex: 1; padding: clamp(12px, 5vw, 18px) 0; font-family: 'Press Start 2P', cursive; font-size: clamp(12px, 4vw, 16px); border: 4px solid #fff; cursor: pointer; text-align: center; box-shadow: 4px 4px 0 #000; transition: all 0.1s; }
+    #startBtn { background: #c00; color: #fff; }
+    #startBtn.disabled { background: #600; color: #aaa; pointer-events: none; box-shadow: 2px 2px 0 #000; }
+    #cashoutBtn { background: #0c0; color: #fff; }
+
+    #modal { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #111; border: 6px solid #fff; padding: clamp(20px, 8vw, 40px); text-align: center; color: #fff; font-size: clamp(14px, 4vw, 18px); box-shadow: 8px 8px 0 #000; z-index: 100; display: none; max-width: 95%; border-radius: 8px; }
+    #modal h2 { margin-bottom: 20px; color: #f00; font-size: 1.2em; }
+    #modal p { margin: 15px 0; line-height: 1.4; }
+    #lostAmount { color: #f66; font-size: 1.4em; margin: 10px 0; }
+    #okBtn { margin-top: 25px; padding: 14px 40px; background: #ff0; color: #000; border: 4px solid #fff; font-family: 'Press Start 2P', cursive; font-size: clamp(12px, 4vw, 16px); cursor: pointer; box-shadow: 4px 4px 0 #000; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div id="dollars">$0</div>
+    <div id="km">0.0 km</div>
+  </div>
+
+  <div id="buttons">
+    <div id="startBtn" class="btn">START</div>
+    <div id="cashoutBtn" class="btn">CASHOUT</div>
+  </div>
+
+  <div id="modal">
+    <h2>CRASH!</h2>
+    <p id="resultText">You lost:</p>
+    <p id="lostAmount"></p>
+    <p id="distText"></p>
+    <div id="okBtn">OK</div>
+  </div>
+
+  <canvas id="game"></canvas>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const dollarsEl = document.getElementById('dollars');
+    const kmEl = document.getElementById('km');
+    const startBtn = document.getElementById('startBtn');
+    const cashoutBtn = document.getElementById('cashoutBtn');
+    const modal = document.getElementById('modal');
+    const resultText = document.getElementById('resultText');
+    const lostAmountEl = document.getElementById('lostAmount');
+    const distText = document.getElementById('distText');
+    const okBtn = document.getElementById('okBtn');
+
+    // === Global vars ===
+    let roadX, roadWidth, laneWidth, playerWidth, playerHeight;
+    const lanes = 4;
+    let player, enemies, roadOffset, dollars, distance, gameActive = false;
+    const roadSpeed = 6;
+    let spawnTimer = 0;
+    const spawnRate = 80;
+    let dollarAcc = 0;
+    const dollarRate = 10 / (60 * 5);
+
+    // === Resize ===
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      roadWidth = canvas.width * 0.9;
+      roadX = (canvas.width - roadWidth) / 2;
+      laneWidth = roadWidth / lanes;
+
+      playerWidth = laneWidth * 0.7;
+      playerHeight = playerWidth * 1.6;
+
+      if (player) {
+        player.width = playerWidth;
+        player.height = playerHeight;
+        player.x = getLaneX(player.targetLane);
+        player.y = canvas.height - playerHeight - 30;
+      }
+    }
+
+    // === Load images ===
+    const images = {};
+    const names = ['1', '2', '3', '4', 'main'];
+    let loaded = 0;
+
+    names.forEach(name => {
+      const img = new Image();
+      img.src = `${name}.png`;
+      img.onload = () => {
+        loaded++;
+        if (loaded === names.length) {
+          resize();
+          window.addEventListener('resize', resize);
+          initGame();
+        }
+      };
+      img.onerror = () => console.error(`Missing: ${name}.png`);
+      images[name] = img;
+    });
+
+    // === Init ===
+    function initGame() {
+      resetGame();
+      draw();
+    }
+
+    function resetGame() {
+      player = {
+        lane: 1,
+        targetLane: 1,
+        x: getLaneX(1),
+        y: canvas.height - playerHeight - 30,
+        width: playerWidth,
+        height: playerHeight,
+        img: images.main
+      };
+
+      enemies = [];
+      roadOffset = 0;
+      dollars = 0;
+      distance = 0;
+      gameActive = false;
+      spawnTimer = 0;
+      dollarAcc = 0;
+
+      startBtn.classList.remove('disabled');
+      modal.style.display = 'none';
+      updateUI();
+    }
+
+    function getLaneX(lane) {
+      return roadX + lane * laneWidth + (laneWidth - playerWidth) / 2;
+    }
+
+    function updateUI() {
+      dollarsEl.textContent = `$${Math.floor(dollars)}`;
+      kmEl.textContent = `${(distance / 1000).toFixed(1)} km`;
+    }
+
+    // === Controls ===
+    canvas.addEventListener('touchstart', e => {
+      if (!gameActive) return;
+      e.preventDefault();
+      const touch = e.touches[0];
+      const rect = canvas.getBoundingClientRect();
+      const half = rect.width / 2;
+      const dir = (touch.clientX - rect.left) < half ? -1 : 1;
+      movePlayer(dir);
+    }, { passive: false });
+
+    canvas.addEventListener('click', e => {
+      if (!gameActive) return;
+      const rect = canvas.getBoundingClientRect();
+      const half = rect.width / 2;
+      const dir = (e.clientX - rect.left) < half ? -1 : 1;
+      movePlayer(dir);
+    });
+
+    function movePlayer(dir) {
+      player.targetLane = Math.max(0, Math.min(lanes - 1, player.targetLane + dir));
+    }
+
+    // === Buttons ===
+    startBtn.addEventListener('click', () => {
+      if (gameActive) return;
+      gameActive = true;
+      startBtn.classList.add('disabled');
+      requestAnimationFrame(gameLoop);
+    });
+
+    cashoutBtn.addEventListener('click', () => {
+      if (!gameActive || dollars === 0) return;
+      gameActive = false;
+      showModal('CASHOUT');
+    });
+
+    okBtn.addEventListener('click', () => {
+      modal.style.display = 'none';
+      resetGame();
+    });
+
+    function showModal(type) {
+      const earned = Math.floor(dollars);
+      if (type === 'CRASH') {
+        resultText.textContent = 'You lost:';
+        lostAmountEl.textContent = `-${earned}$`;
+        lostAmountEl.style.color = '#f66';
+      } else {
+        resultText.textContent = 'You earned:';
+        lostAmountEl.textContent = `+${earned}$`;
+        lostAmountEl.style.color = '#0f0';
+      }
+      distText.textContent = `Distance: ${(distance / 1000).toFixed(1)} km`;
+      modal.style.display = 'block';
+    }
+
+    // === Spawn enemy ===
+    function spawnEnemy() {
+      const lane = Math.floor(Math.random() * lanes);
+      if (enemies.some(e => Math.abs(e.y + 140) < 200 && e.lane === lane)) return;
+
+      const type = (Math.floor(Math.random() * 4) + 1).toString();
+      enemies.push({
+        x: getLaneX(lane),
+        y: -playerHeight - 50,
+        width: playerWidth,
+        height: playerHeight,
+        lane,
+        img: images[type]
+      });
+    }
+
+    // === Game loop ===
+    function gameLoop() {
+      if (!gameActive) {
+        draw();
+        return;
+      }
+
+      roadOffset = (roadOffset + roadSpeed) % 60;
+
+      player.x += (getLaneX(player.targetLane) - player.x) * 0.3;
+
+      spawnTimer++;
+      if (spawnTimer >= spawnRate) {
+        spawnTimer = 0;
+        spawnEnemy();
+      }
+
+      enemies = enemies.filter(e => {
+        e.y += roadSpeed + 4;
+        return e.y < canvas.height + 100;
+      });
+
+      dollarAcc += dollarRate;
+      if (dollarAcc >= 1) {
+        dollars += Math.floor(dollarAcc);
+        dollarAcc -= Math.floor(dollarAcc);
+      }
+      distance += roadSpeed * 0.15;
+
+      for (let e of enemies) {
+        if (
+          player.x < e.x + e.width * 0.9 &&
+          player.x + player.width * 0.9 > e.x &&
+          player.y < e.y + e.height * 0.9 &&
+          player.y + player.height * 0.9 > e.y
+        ) {
+          gameActive = false;
+          setTimeout(() => showModal('CRASH'), 200);
+          return;
+        }
+      }
+
+      updateUI();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // === Render ===
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Background
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Asphalt
+      ctx.fillStyle = '#222';
+      ctx.fillRect(roadX, 0, roadWidth, canvas.height);
+
+      // Lane markings
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = Math.max(3, canvas.width * 0.008);
+      for (let i = 1; i < lanes; i++) {
+        const x = roadX + i * laneWidth;
+        ctx.beginPath();
+        for (let y = roadOffset - 60; y < canvas.height; y += 60) {
+          ctx.moveTo(x, y);
+          ctx.lineTo(x, y + 30);
+        }
+        ctx.stroke();
+      }
+
+      // Road edges
+      ctx.lineWidth = Math.max(5, canvas.width * 0.012);
+      ctx.strokeStyle = '#444';
+      ctx.beginPath();
+      ctx.moveTo(roadX, 0); ctx.lineTo(roadX, canvas.height);
+      ctx.moveTo(roadX + roadWidth, 0); ctx.lineTo(roadX + roadWidth, canvas.height);
+      ctx.stroke();
+
+      // Enemies
+      enemies.forEach(e => {
+        ctx.drawImage(e.img, e.x, e.y, e.width, e.height);
+      });
+
+      // Player
+      ctx.drawImage(player.img, player.x, player.y, player.width, player.height);
+    }
+  </script>
+</body>
+</html>
